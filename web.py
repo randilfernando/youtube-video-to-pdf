@@ -30,6 +30,11 @@ class NewSession(BaseModel):
     name: str = ""
 
 
+class RescanRequest(BaseModel):
+    threshold: float = 0.5  # percent of pixels that must change to count as a new slide
+    interval: float = 2.0   # seconds between sampled frames
+
+
 class PdfRequest(BaseModel):
     keep: list[str]
 
@@ -93,6 +98,25 @@ def run_job(job, folder, url):
         job.update(state="error", error=str(e))
 
 
+def run_rescan(job, folder, video, interval, threshold):
+    """Re-detect slides from the saved video; the old screenshots are replaced only if this succeeds."""
+    def report(stage, fraction, detail=""):
+        job.update(stage=stage, fraction=fraction, detail=detail)
+
+    fresh = folder / f"{slides.SCREENSHOTS}.new"
+    try:
+        shutil.rmtree(fresh, ignore_errors=True)
+        slides.extract_from_video(video, fresh, interval, threshold, report)
+        shutil.rmtree(folder / slides.SCREENSHOTS, ignore_errors=True)
+        shutil.rmtree(folder / ".thumbs", ignore_errors=True)
+        preview_path(folder).unlink(missing_ok=True)
+        fresh.rename(folder / slides.SCREENSHOTS)
+        job["state"] = "done"
+    except Exception as e:
+        shutil.rmtree(fresh, ignore_errors=True)
+        job.update(state="error", error=str(e))
+
+
 @app.post("/api/sessions")
 def create_session(body: NewSession):
     url = body.url.strip()
@@ -130,7 +154,22 @@ def get_session(sid: str):
     if not job["title"]:
         job = {**job, "title": display_name(folder)}
     return {**job, "id": sid, "images": image_names(folder) if job["state"] != "running" else [],
-            "pdf": pdf_path(folder).exists()}
+            "pdf": pdf_path(folder).exists(), "has_video": slides.find_video(folder) is not None}
+
+
+@app.post("/api/sessions/{sid}/rescan")
+def rescan(sid: str, body: RescanRequest):
+    folder = session_dir(sid)
+    video = slides.find_video(folder)
+    if not video:
+        raise HTTPException(400, "This session has no saved video to re-scan")
+    if JOBS.get(sid, {}).get("state") == "running":
+        raise HTTPException(409, "This session is already being processed")
+    JOBS[sid] = {"state": "running", "stage": "Playing", "fraction": 0, "detail": "Starting…",
+                 "title": display_name(folder), "error": "", "log": []}
+    threading.Thread(target=run_rescan, daemon=True, args=(
+        JOBS[sid], folder, video, min(max(body.interval, 0.5), 10), min(max(body.threshold, 0.05), 20))).start()
+    return {"id": sid}
 
 
 @app.get("/api/sessions/{sid}/images/{name}")

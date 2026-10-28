@@ -54,6 +54,15 @@
   .prow .del:hover { background: var(--danger); color: #fff; border-color: var(--danger); }
   .pframe { width: 100%; height: 68vh; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
 
+  /* re-scan dialog */
+  dialog { border: 0; border-radius: 16px; padding: 24px; max-width: 420px; width: calc(100% - 32px);
+    background: var(--card); color: var(--text); box-shadow: var(--shadow); }
+  dialog::backdrop { background: rgba(0,0,0,.45); }
+  dialog select { width: 100%; padding: 11px 12px; font-size: 16px; color: var(--text); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 10px; }
+  dialog h3 { margin: 0 0 4px; }
+  dialog .actions { margin-top: 20px; justify-content: flex-end; }
+
   /* progress */
   .steps { display: flex; gap: 8px; margin-bottom: 20px; }
   .step { flex: 1; text-align: center; font-size: 13px; color: var(--muted); padding: 8px 4px;
@@ -189,6 +198,7 @@
       <div class="inner">
         <span class="count" id="bcount"></span>
         <div class="links">
+          <button class="ghost hidden" id="rescanBtn" title="Detect the slides again from the saved video">Re-scan</button>
           <button class="ghost" id="newBtn">New video</button>
           <button id="pdfBtn">Generate PDF</button>
         </div>
@@ -223,6 +233,31 @@
     <div class="saved" id="saved"></div>
   </section>
 </main>
+<dialog id="rescanDlg">
+  <h3>Re-scan the video</h3>
+  <p class="sub" style="margin-bottom:16px">Detects the slides again from the saved video. No download needed.</p>
+  <div class="field">
+    <label for="rsSens">Sensitivity</label>
+    <select id="rsSens">
+      <option value="0.15">More slides – catches the smallest changes</option>
+      <option value="0.5" selected>Balanced (default)</option>
+      <option value="1.5">Fewer slides – only big changes</option>
+    </select>
+  </div>
+  <div class="field">
+    <label for="rsInt">Check the video every</label>
+    <select id="rsInt">
+      <option value="1">1 second (slower, misses less)</option>
+      <option value="2" selected>2 seconds</option>
+      <option value="4">4 seconds (faster)</option>
+    </select>
+  </div>
+  <div class="hint">This replaces the current screenshots and clears your keep / remove choices.</div>
+  <div class="actions">
+    <button class="ghost" id="rsCancel">Cancel</button>
+    <button id="rsGo">Re-scan</button>
+  </div>
+</dialog>
 <div id="toast" class="toast hidden"></div>
 
 <script>
@@ -235,7 +270,7 @@ const show = (name) => {
 
 let sid = null, poll = null;
 let images = [], removed = new Set(), cur = 0, title = "";
-let pdfBlob = null, pdfInfo = null;
+let pdfBlob = null, pdfInfo = null, hasVideo = false;
 
 const img = (name, thumb) => `/api/sessions/${sid}/images/${encodeURIComponent(name)}${thumb ? "?thumb=1" : ""}`;
 const storeKey = () => `removed:${sid}`;
@@ -334,6 +369,7 @@ async function tick() {
   if (s.state === "done") {
     clearInterval(poll);
     title = s.title || sid;
+    hasVideo = s.has_video;
     return openReview(s.images, s.pdf);
   }
   const order = ["Fetching info", "Downloading", "Playing"];
@@ -363,6 +399,7 @@ function openReview(list, hasPdf) {
     return;
   }
   $("rtitle").textContent = title;
+  $("rescanBtn").classList.toggle("hidden", !hasVideo);
   $("grid").innerHTML = images.map((n, i) =>
     `<div class="thumb" data-i="${i}"><img loading="lazy" src="${img(n, true)}" alt=""><span class="n">${i + 1}</span><button class="tick" title="Keep / remove this slide" aria-label="Keep or remove slide ${i + 1}"></button></div>`).join("");
   show("review");
@@ -411,6 +448,21 @@ document.addEventListener("keydown", (e) => {
   else if (e.key === "x" || e.key === " ") { e.preventDefault(); $("keep").click(); }
 });
 $("newBtn").onclick = reset;
+
+/* ---------- re-scan ---------- */
+$("rescanBtn").onclick = () => $("rescanDlg").showModal();
+$("rsCancel").onclick = () => $("rescanDlg").close();
+$("rsGo").onclick = async () => {
+  $("rescanDlg").close();
+  try {
+    await api(`/api/sessions/${sid}/rescan`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ threshold: +$("rsSens").value, interval: +$("rsInt").value }),
+    });
+    try { localStorage.removeItem(storeKey()); } catch {}
+    watch();
+  } catch (err) { toast(err.message); }
+};
 
 /* ---------- pdf ---------- */
 let previewUrl = null;
