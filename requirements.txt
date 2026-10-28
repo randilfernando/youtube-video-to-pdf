@@ -2,3 +2,5 @@ yt-dlp[default]
 opencv-python-headless
 numpy
 Pillow
+fastapi
+uvicorn

@@ -35,19 +35,33 @@ def progress(label, fraction, detail=""):
     print(f"\r\033[K{label:<12}[{bar}] {pct:3d}%  {detail}", end="", flush=True)
 
 
+def cli_report(stage, fraction, detail=""):
+    """Default progress reporter for the terminal. fraction=None means unknown length."""
+    if fraction is None:
+        print(f"\r\033[K{stage}... {detail}", end="", flush=True)
+    else:
+        progress(stage, fraction, detail)
+        if fraction >= 1:
+            print()
+
+
+def cli_log(msg):
+    print(f"\r\033[K{msg}", flush=True)
+
+
 def clock(seconds):
     s = int(seconds)
     return f"{s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}" if s >= 3600 else f"{s // 60}:{s % 60:02d}"
 
 
-def download_video(url, max_height, dest_dir, verbose=False):
+def download_video(url, max_height, dest_dir, verbose=False, report=cli_report, log=cli_log):
     """Download a video-only file (no ffmpeg needed) with a live progress line."""
     t0 = time.time()
 
     class Log:
         """Timestamped yt-dlp log lines, printed above the live progress line."""
         def _emit(self, msg):
-            print(f"\r\033[K[{time.time() - t0:6.1f}s] {msg}", flush=True)
+            log(f"[{time.time() - t0:6.1f}s] {msg}")
 
         def debug(self, msg):
             if verbose and not msg.startswith("[debug] "):
@@ -69,7 +83,7 @@ def download_video(url, max_height, dest_dir, verbose=False):
     def tick():
         start = time.time()
         while not fetching.wait(0.5):
-            print(f"\r\033[KFetching info... {int(time.time() - start)}s elapsed", end="", flush=True)
+            report("Fetching info", None, f"{int(time.time() - start)}s elapsed")
 
     def hook(d):
         fetching.set()
@@ -80,10 +94,9 @@ def download_video(url, max_height, dest_dir, verbose=False):
             detail = f"{done / 1e6:.1f}/{total / 1e6:.1f} MB"
             if speed:
                 detail += f"  {speed / 1e6:.1f} MB/s"
-            progress("Downloading", done / total if total else 0, detail)
+            report("Downloading", done / total if total else 0, detail)
         elif d["status"] == "finished":
-            progress("Downloading", 1, "done")
-            print()
+            report("Downloading", 1, "done")
 
     h = max_height
     opts = {"logger": Log(), "verbose": verbose, "noprogress": True, "progress_hooks": [hook],
@@ -110,9 +123,16 @@ def fingerprint(frame):
     return cv2.GaussianBlur(cv2.cvtColor(small, cv2.COLOR_BGR2GRAY), (3, 3), 0).astype(np.float32)
 
 
+PIXEL_DELTA = 25  # a pixel counts as changed when its gray level moves by more than this
+
+
 def difference(a, b):
-    """Mean absolute pixel difference (0-255) between two fingerprints."""
-    return float(np.mean(np.abs(a - b)))
+    """Percentage (0-100) of pixels that changed noticeably between two fingerprints.
+
+    Counting changed pixels, rather than averaging the change, keeps small edits
+    (a new bullet line) visible on slides that are mostly blank.
+    """
+    return float(np.mean(np.abs(a - b) > PIXEL_DELTA) * 100)
 
 
 def fmt_time(seconds):
@@ -120,30 +140,43 @@ def fmt_time(seconds):
     return f"{s // 3600:02d}h{s % 3600 // 60:02d}m{s % 60:02d}s"
 
 
+def new_session_folder(name):
+    folder = SESSIONS_DIR / f"{slugify(name)}-{datetime.now():%Y%m%d-%H%M%S}"
+    folder.mkdir(parents=True)
+    return folder
+
+
 def extract_images(args):
     name = args.name.strip()
     if not name:
         sys.exit("--name must not be empty.")
-    folder = SESSIONS_DIR / f"{slugify(name)}-{datetime.now():%Y%m%d-%H%M%S}"
-    folder.mkdir(parents=True)
+    folder = new_session_folder(name)
 
     print(f"Session folder: {folder}")
     with tempfile.TemporaryDirectory() as tmp:
         video, title = download_video(args.url, args.max_height, tmp, args.verbose)
         print(f"Title: {title}")
-        extract_from_video(video, folder, args)
+        try:
+            extract_from_video(video, folder, args.interval, args.threshold)
+        except RuntimeError as e:
+            sys.exit(str(e))
+    images = sorted(p.name for p in folder.glob("*.png"))
+    print(f"\nSaved {len(images)} photos:")
+    for img in images:
+        print(f"  {img}")
+    print(f"Folder: {folder.resolve()}")
+    print(f"Link: {file_link(folder)}")
 
 
-def extract_from_video(video, folder, args):
-    cap = cv2.VideoCapture(video)
+def extract_from_video(video, folder, interval, threshold, report=cli_report):
+    """Save each distinct slide of `video` into `folder`; returns the number saved."""
+    cap = cv2.VideoCapture(str(video))
     if not cap.isOpened():
-        sys.exit("Could not open the downloaded video (unsupported codec?).")
+        raise RuntimeError("Could not open the downloaded video (unsupported codec?).")
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     duration = total / fps
-    step = max(1, int(fps * args.interval))
-    print(f"Video: {int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))} "
-          f"@ {fps:.0f}fps, {clock(duration)} long; sampling every {args.interval}s")
+    step = max(1, int(fps * interval))
 
     last = None   # fingerprint of last saved slide
     pending = None  # (fingerprint, frame, time) candidate waiting to prove stable
@@ -167,10 +200,10 @@ def extract_from_video(video, folder, args):
         t = idx / fps
         fp = fingerprint(frame)
 
-        if last is None or difference(fp, last) > args.threshold:
+        if last is None or difference(fp, last) > threshold:
             # New content: only save once it is unchanged for one more sample
             # (avoids saving mid-transition/animation frames).
-            if pending is not None and difference(fp, pending[0]) <= args.threshold / 2:
+            if pending is not None and difference(fp, pending[0]) <= threshold / 2:
                 save(pending[1], pending[2])
                 last, pending = pending[0], None
             else:
@@ -178,25 +211,25 @@ def extract_from_video(video, folder, args):
         else:
             pending = None
 
-        if total:
-            progress("Playing", idx / total, f"{clock(t)}/{clock(duration)}  {saved} screenshots saved")
+        if total and idx < total:
+            report("Playing", idx / total, f"{clock(t)}/{clock(duration)}  {saved} screenshots saved")
 
     # the final candidate never got a confirming sample; keep it
     if pending is not None:
         save(pending[1], pending[2])
     cap.release()
-    progress("Playing", 1, f"{clock(duration)}/{clock(duration)}  {saved} screenshots saved")
-    print()
-    images = sorted(p.name for p in folder.glob("*.png"))
-    print(f"\nSaved {len(images)} photos:")
-    for img in images:
-        print(f"  {img}")
-    print(f"Folder: {folder.resolve()}")
-    print(f"Link: {file_link(folder)}")
+    report("Playing", 1, f"{clock(duration)}/{clock(duration)}  {saved} screenshots saved")
+    return saved
 
 
 def file_link(path):
     return Path(path).resolve().as_uri()
+
+
+def build_pdf(files, out):
+    """Write the image `files` (in the given order) as pages of a PDF at `out`."""
+    images = [Image.open(p).convert("RGB") for p in files]
+    images[0].save(out, save_all=True, append_images=images[1:], resolution=150)
 
 
 def generate_pdf(args):
@@ -204,10 +237,9 @@ def generate_pdf(args):
     files = sorted(p for p in folder.iterdir() if p.suffix.lower() in {".png", ".jpg", ".jpeg"})
     if not files:
         sys.exit(f"No images found in {folder}")
-    images = [Image.open(p).convert("RGB") for p in files]
     out = Path(args.output) if args.output else folder / f"{folder.name}.pdf"
-    images[0].save(out, save_all=True, append_images=images[1:], resolution=150)
-    print(f"Wrote {out} ({len(images)} pages)")
+    build_pdf(files, out)
+    print(f"Wrote {out} ({len(files)} pages)")
     print(f"PDF: {out.resolve()}")
     print(f"Link: {file_link(out)}")
 
@@ -233,8 +265,9 @@ def main():
 
 def add_capture_options(c):
     c.add_argument("--interval", type=float, default=2.0, help="seconds between sampled frames (default 2)")
-    c.add_argument("--threshold", type=float, default=3.0,
-                   help="mean pixel difference that counts as a new slide (default 3; lower = more sensitive)")
+    c.add_argument("--threshold", type=float, default=0.5,
+                   help="percent of pixels that must change to count as a new slide "
+                        "(default 0.5; lower = more sensitive)")
     c.add_argument("--verbose", action="store_true", help="show detailed timestamped yt-dlp log lines")
     c.add_argument("--max-height", type=int, default=1080, help="max video resolution (default 1080)")
 
