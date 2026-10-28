@@ -39,6 +39,21 @@
   .err { color: var(--danger); margin-top: 12px; font-size: 14px; white-space: pre-wrap; }
   .hidden { display: none !important; }
 
+  /* previous sessions */
+  .past { display: grid; gap: 10px; }
+  .prow { display: flex; align-items: center; background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
+  .prow:hover { border-color: var(--accent); }
+  .prow .open { flex: 1; display: flex; gap: 14px; align-items: center; text-align: left; padding: 10px;
+    background: none; color: var(--text); font-weight: 400; min-width: 0; }
+  .prow .open:hover { background: none; }
+  .prow img { width: 96px; height: 54px; object-fit: cover; border-radius: 6px; background: #0d0f15; flex: none; }
+  .prow b { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .prow span { color: var(--muted); font-size: 13px; }
+  .prow .del { flex: none; margin: 0 10px; padding: 8px 12px; background: none; color: var(--danger);
+    border: 1px solid var(--line); font-size: 14px; }
+  .prow .del:hover { background: var(--danger); color: #fff; border-color: var(--danger); }
+  .pframe { width: 100%; height: 68vh; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
+
   /* progress */
   .steps { display: flex; gap: 8px; margin-bottom: 20px; }
   .step { flex: 1; text-align: center; font-size: 13px; color: var(--muted); padding: 8px 4px;
@@ -59,7 +74,8 @@
   .topline { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
   .topline h2 { margin: 0; font-size: 20px; }
   .count { color: var(--muted); font-size: 14px; }
-  .viewer { position: relative; background: #0d0f15; border-radius: 12px; overflow: hidden; aspect-ratio: 16/9; }
+  .stage { position: sticky; top: 0; z-index: 5; background: var(--card); padding: 16px 0 10px; }
+  .viewer { position: relative; background: #0d0f15; border-radius: 12px; overflow: hidden; height: min(46vh, 460px); }
   .viewer img { width: 100%; height: 100%; object-fit: contain; display: block; transition: opacity .15s, filter .15s; }
   .viewer.removed img { opacity: .25; filter: grayscale(1); }
   .badge { position: absolute; top: 12px; left: 12px; background: var(--danger); color: #fff; font-size: 13px;
@@ -69,7 +85,7 @@
     border-radius: 50%; background: rgba(255,255,255,.88); color: #111; font-size: 22px; line-height: 1; }
   .nav:hover { background: #fff; }
   .nav.prev { left: 12px; } .nav.next { right: 12px; }
-  .controls { display: flex; justify-content: space-between; align-items: center; margin: 14px 0 18px; gap: 12px; flex-wrap: wrap; }
+  .controls { display: flex; justify-content: space-between; align-items: center; margin: 12px 0 0; gap: 12px; flex-wrap: wrap; }
   .pos { color: var(--muted); font-size: 14px; }
   .toggle { display: flex; align-items: center; gap: 10px; cursor: pointer; user-select: none; font-weight: 600; }
   .toggle input { display: none; }
@@ -79,15 +95,19 @@
   .toggle input:checked + .switch { background: var(--ok); }
   .toggle input:checked + .switch::after { transform: translateX(20px); }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px; }
-  .thumb { position: relative; border-radius: 8px; overflow: hidden; border: 2px solid transparent; cursor: pointer;
+  .thumb { position: relative; display: block; scroll-margin-top: calc(min(46vh, 460px) + 110px); border-radius: 8px; overflow: hidden; border: 2px solid transparent; cursor: pointer;
     aspect-ratio: 16/9; background: #0d0f15; padding: 0; }
   .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .thumb.current { border-color: var(--accent); }
   .thumb.removed img { opacity: .25; filter: grayscale(1); }
   .thumb .n { position: absolute; bottom: 4px; left: 4px; background: rgba(0,0,0,.65); color: #fff; font-size: 11px;
     padding: 1px 6px; border-radius: 99px; }
-  .thumb.removed::after { content: "✕"; position: absolute; inset: 0; display: grid; place-items: center;
-    color: var(--danger); font-size: 28px; font-weight: 700; }
+  .thumb .tick { position: absolute; top: 5px; right: 5px; width: 28px; height: 28px; padding: 0; border-radius: 50%;
+    background: var(--ok); color: #fff; font-size: 16px; line-height: 28px; box-shadow: 0 1px 4px rgba(0,0,0,.4); }
+  .thumb .tick::before { content: "✓"; }
+  .thumb.removed .tick { background: var(--danger); }
+  .thumb.removed .tick::before { content: "✕"; }
+  .thumb:hover .tick { transform: scale(1.1); }
   .bottombar { position: fixed; left: 0; right: 0; bottom: 0; background: var(--card); border-top: 1px solid var(--line);
     padding: 12px 16px; display: flex; justify-content: center; gap: 12px; align-items: center; }
   .bottombar .inner { width: 100%; max-width: 880px; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
@@ -125,6 +145,11 @@
     </form>
   </section>
 
+  <section id="past" class="hidden" style="margin-top:28px">
+    <h2 style="font-size:18px;margin:0 0 10px">Previous sessions</h2>
+    <div id="pastList" class="past"></div>
+  </section>
+
   <!-- 2. progress -->
   <section id="progress" class="card hidden">
     <div class="steps">
@@ -145,7 +170,8 @@
       <h2 id="rtitle">Review slides</h2>
       <span class="count" id="rcount"></span>
     </div>
-    <div class="card" style="padding:16px">
+    <div class="card" style="padding:0 16px 16px">
+      <div class="stage">
       <div class="viewer" id="viewer">
         <img id="big" alt="">
         <span class="badge">Removed</span>
@@ -155,6 +181,7 @@
       <div class="controls">
         <span class="pos" id="pos"></span>
         <label class="toggle"><input type="checkbox" id="keep" checked><span class="switch"></span><span id="keepLabel">Keep</span></label>
+      </div>
       </div>
       <div class="grid" id="grid"></div>
     </div>
@@ -169,10 +196,24 @@
     </div>
   </section>
 
-  <!-- 4. result -->
+  <!-- 4. preview -->
+  <section id="preview" class="hidden">
+    <div class="topline">
+      <h2>Check your PDF</h2>
+      <span class="count" id="pinfo"></span>
+    </div>
+    <iframe id="pframe" class="pframe" title="PDF preview"></iframe>
+    <div class="actions">
+      <button id="recreate" class="ghost">↺ Recreate</button>
+      <button id="save">💾 Save PDF</button>
+    </div>
+    <div class="hint" style="text-align:center;margin-top:10px">Recreate takes you back to the slides to change your selection.</div>
+  </section>
+
+  <!-- 5. result -->
   <section id="result" class="card result hidden">
     <div class="check">✅</div>
-    <h2>Your PDF is ready</h2>
+    <h2>PDF saved</h2>
     <div class="sub" id="rinfo"></div>
     <div class="actions">
       <button id="dl">⬇ Download PDF</button>
@@ -186,8 +227,11 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-const sections = ["start", "progress", "review", "result"];
-const show = (name) => sections.forEach((s) => $(s).classList.toggle("hidden", s !== name));
+const sections = ["start", "progress", "review", "preview", "result"];
+const show = (name) => {
+  sections.forEach((s) => $(s).classList.toggle("hidden", s !== name));
+  if (name === "start") loadPast(); else $("past").classList.add("hidden");
+};
 
 let sid = null, poll = null;
 let images = [], removed = new Set(), cur = 0, title = "";
@@ -229,6 +273,40 @@ $("startForm").addEventListener("submit", async (e) => {
     $("startErr").textContent = err.message;
     $("startErr").classList.remove("hidden");
   } finally { $("startBtn").disabled = false; }
+});
+
+/* ---------- previous sessions ---------- */
+const esc = (t) => t.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+async function loadPast() {
+  let list = [];
+  try { list = await (await api("/api/sessions")).json(); } catch {}
+  $("past").classList.toggle("hidden", !list.length);
+  $("pastList").innerHTML = list.map((s) => {
+    const when = new Date(s.created).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+    return `<div class="prow" data-id="${s.id}" data-title="${esc(s.title)}">
+      <button class="open">
+        <img src="/api/sessions/${s.id}/images/${encodeURIComponent(s.cover)}?thumb=1" alt="">
+        <div style="min-width:0"><b>${esc(s.title)}</b><span>${s.slides} slides · ${when}${s.pdf ? " · PDF ready" : ""}</span></div>
+      </button>
+      <button class="del" title="Delete this session">Delete</button></div>`;
+  }).join("");
+}
+
+$("pastList").addEventListener("click", async (e) => {
+  const row = e.target.closest(".prow");
+  if (!row) return;
+  if (e.target.closest(".del")) {
+    if (!confirm(`Delete "${row.dataset.title}" and its video, slides and PDF?\nThis cannot be undone.`)) return;
+    try {
+      await api(`/api/sessions/${row.dataset.id}`, { method: "DELETE" });
+      try { localStorage.removeItem(`removed:${row.dataset.id}`); } catch {}
+      toast("Session deleted");
+      loadPast();
+    } catch (err) { toast(err.message); }
+    return;
+  }
+  sid = row.dataset.id; location.hash = sid; watch();
 });
 
 /* ---------- progress ---------- */
@@ -286,7 +364,7 @@ function openReview(list, hasPdf) {
   }
   $("rtitle").textContent = title;
   $("grid").innerHTML = images.map((n, i) =>
-    `<button class="thumb" data-i="${i}"><img loading="lazy" src="${img(n, true)}" alt=""><span class="n">${i + 1}</span></button>`).join("");
+    `<div class="thumb" data-i="${i}"><img loading="lazy" src="${img(n, true)}" alt=""><span class="n">${i + 1}</span><button class="tick" title="Keep / remove this slide" aria-label="Keep or remove slide ${i + 1}"></button></div>`).join("");
   show("review");
   render();
 }
@@ -305,21 +383,26 @@ function render() {
   const kept = images.length - removed.size;
   $("rcount").textContent = $("bcount").textContent = `${kept} of ${images.length} slides kept`;
   $("pdfBtn").disabled = kept === 0;
-  document.querySelector(".thumb.current")?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   try { localStorage.setItem(storeKey(), JSON.stringify([...removed])); } catch {}
 }
 
-const go = (d) => { cur = (cur + d + images.length) % images.length; render(); };
-$("prev").onclick = () => go(-1);
-$("next").onclick = () => go(1);
-$("keep").onchange = () => {
-  const n = images[cur];
+const go = (d) => {
+  cur = (cur + d + images.length) % images.length; render();
+  document.querySelector(".thumb.current")?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+};
+function toggle(i) {
+  const n = images[i];
   removed.has(n) ? removed.delete(n) : removed.add(n);
   pdfBlob = null; render();
-};
+}
+$("prev").onclick = () => go(-1);
+$("next").onclick = () => go(1);
+$("keep").onchange = () => toggle(cur);
 $("grid").addEventListener("click", (e) => {
   const t = e.target.closest(".thumb");
-  if (t) { cur = +t.dataset.i; render(); }
+  if (!t) return;
+  if (e.target.closest(".tick")) toggle(+t.dataset.i);  // corner button: keep / remove
+  else { cur = +t.dataset.i; render(); }                // anywhere else: show it above
 });
 document.addEventListener("keydown", (e) => {
   if ($("review").classList.contains("hidden") || e.target.tagName === "INPUT" && e.target.type === "text") return;
@@ -330,6 +413,8 @@ document.addEventListener("keydown", (e) => {
 $("newBtn").onclick = reset;
 
 /* ---------- pdf ---------- */
+let previewUrl = null;
+
 $("pdfBtn").onclick = async () => {
   const btn = $("pdfBtn"); btn.disabled = true; btn.textContent = "Generating…";
   try {
@@ -337,12 +422,27 @@ $("pdfBtn").onclick = async () => {
     pdfInfo = await (await api(`/api/sessions/${sid}/pdf`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ keep }),
     })).json();
-    pdfBlob = await (await api(`/api/sessions/${sid}/pdf?t=${Date.now()}`)).blob(); // pre-fetched so sharing is instant
-    $("rinfo").textContent = `${pdfInfo.pages} pages · ${(pdfInfo.bytes / 1e6).toFixed(1)} MB`;
-    $("saved").textContent = `Saved on this computer:\n${pdfInfo.path}`;
-    show("result");
+    pdfBlob = await (await api(`/api/sessions/${sid}/pdf?preview=true&t=${Date.now()}`)).blob(); // kept for sharing
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    previewUrl = URL.createObjectURL(pdfBlob);
+    $("pframe").src = previewUrl;
+    $("pinfo").textContent = `${pdfInfo.pages} pages · ${(pdfInfo.bytes / 1e6).toFixed(1)} MB`;
+    show("preview");
   } catch (err) { toast(err.message); }
   finally { btn.textContent = "Generate PDF"; btn.disabled = false; }
+};
+
+$("recreate").onclick = () => show("review");
+
+$("save").onclick = async () => {
+  const btn = $("save"); btn.disabled = true;
+  try {
+    const saved = await (await api(`/api/sessions/${sid}/pdf/save`, { method: "POST" })).json();
+    $("rinfo").textContent = `${pdfInfo.pages} pages · ${(saved.bytes / 1e6).toFixed(1)} MB`;
+    $("saved").textContent = `Saved on this computer:\n${saved.path}`;
+    show("result");
+  } catch (err) { toast(err.message); }
+  finally { btn.disabled = false; }
 };
 
 const pdfName = () => `${(title || "slides").replace(/[^\w\- ]+/g, "").trim() || "slides"}.pdf`;
@@ -367,7 +467,7 @@ $("wa").onclick = async () => {
 $("back").onclick = () => show("review");
 
 /* ---------- resume after reload ---------- */
-if (location.hash.length > 1) { sid = location.hash.slice(1); watch(); }
+if (location.hash.length > 1) { sid = location.hash.slice(1); watch(); } else loadPast();
 </script>
 </body>
 </html>

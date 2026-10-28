@@ -9,7 +9,6 @@ Non-interactive (safe for scripts/agents). For the interactive flow use ./run.sh
 import argparse
 import re
 import sys
-import tempfile
 import threading
 import time
 from datetime import datetime
@@ -22,6 +21,18 @@ from PIL import Image
 
 SESSIONS_DIR = Path("sessions")
 COMPARE_SIZE = (320, 180)
+SCREENSHOTS = "screenshots"  # subfolder of a session holding the slide images
+
+
+def screenshots_dir(session):
+    """Where a session's slide images live (older sessions kept them in the session folder itself)."""
+    d = Path(session) / SCREENSHOTS
+    return d if d.is_dir() else Path(session)
+
+
+def find_video(session):
+    """The video already downloaded into a session, if any."""
+    return next((p for p in sorted(Path(session).glob("video.*")) if p.suffix not in {".part", ".ytdl"}), None)
 
 
 def slugify(text):
@@ -55,7 +66,7 @@ def clock(seconds):
 
 
 def download_video(url, max_height, dest_dir, verbose=False, report=cli_report, log=cli_log):
-    """Download a video-only file (no ffmpeg needed) with a live progress line."""
+    """Download a video-only file (no ffmpeg needed) as `video.<ext>` in `dest_dir`."""
     t0 = time.time()
 
     class Log:
@@ -153,23 +164,26 @@ def extract_images(args):
     folder = new_session_folder(name)
 
     print(f"Session folder: {folder}")
-    with tempfile.TemporaryDirectory() as tmp:
-        video, title = download_video(args.url, args.max_height, tmp, args.verbose)
-        print(f"Title: {title}")
-        try:
-            extract_from_video(video, folder, args.interval, args.threshold)
-        except RuntimeError as e:
-            sys.exit(str(e))
-    images = sorted(p.name for p in folder.glob("*.png"))
+    video, title = download_video(args.url, args.max_height, folder, args.verbose)
+    print(f"Title: {title}")
+    shots = folder / SCREENSHOTS
+    try:
+        extract_from_video(video, shots, args.interval, args.threshold)
+    except RuntimeError as e:
+        sys.exit(str(e))
+    images = sorted(p.name for p in shots.glob("*.png"))
     print(f"\nSaved {len(images)} photos:")
     for img in images:
         print(f"  {img}")
+    print(f"Video: {Path(video).resolve()}")
     print(f"Folder: {folder.resolve()}")
+    print(f"Screenshots: {shots.resolve()}")
     print(f"Link: {file_link(folder)}")
 
 
 def extract_from_video(video, folder, interval, threshold, report=cli_report):
     """Save each distinct slide of `video` into `folder`; returns the number saved."""
+    folder.mkdir(parents=True, exist_ok=True)
     cap = cv2.VideoCapture(str(video))
     if not cap.isOpened():
         raise RuntimeError("Could not open the downloaded video (unsupported codec?).")
@@ -234,7 +248,7 @@ def build_pdf(files, out):
 
 def generate_pdf(args):
     folder = Path(args.folder)
-    files = sorted(p for p in folder.iterdir() if p.suffix.lower() in {".png", ".jpg", ".jpeg"})
+    files = sorted(p for p in screenshots_dir(folder).iterdir() if p.suffix.lower() in {".png", ".jpg", ".jpeg"})
     if not files:
         sys.exit(f"No images found in {folder}")
     out = Path(args.output) if args.output else folder / f"{folder.name}.pdf"
