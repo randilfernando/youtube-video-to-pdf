@@ -494,6 +494,7 @@ $("save").onclick = async () => {
     pdfFile = saved.name;
     $("rinfo").textContent = `${pdfFile} · ${pdfInfo.pages} pages · ${(saved.bytes / 1e6).toFixed(1)} MB`;
     $("driveMsg").textContent = "";
+    $("drive").classList.remove("hidden");
     $("saved").textContent = `Saved on this computer:\n${saved.path}`;
     show("result");
   } catch (err) { toast(err.message); }
@@ -566,7 +567,8 @@ $("drive").onclick = async () => {
   msg.textContent = "";
   try {
     const r = await uploadToDrive(pdfBlob, pdfFile);
-    msg.innerHTML = `Uploaded to the “${esc(DRIVE_FOLDER)}” folder in Google Drive. <a href="${r.webViewLink}" target="_blank" rel="noopener">Open in Drive</a>`;
+    msg.innerHTML = `✓ Uploaded to Google Drive (${esc(DRIVE_FOLDER)}/${esc(pdfFile)}). <a href="${r.webViewLink}" target="_blank" rel="noopener">Open in Drive</a>`;
+    btn.classList.add("hidden");
   } catch (err) { msg.textContent = err.message; }
   finally { btn.disabled = false; btn.textContent = "☁ Upload to Google Drive"; }
 };
