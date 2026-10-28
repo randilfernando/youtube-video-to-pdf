@@ -1,4 +1,4 @@
-# youtube-video-to-pdf
+# Youtube Video to PDF
 
 Capture the distinct slides from a YouTube video, review them, then build a PDF.
 
@@ -12,7 +12,15 @@ pip install -r requirements.txt
 ```
 ./serve.sh        # then open http://localhost:8000
 ```
-Paste a YouTube link, watch the progress, then review the slides: use the ‹ › buttons (or the arrow keys) to move through them and the **Keep** switch (or `x` / space) to drop unwanted ones. **Generate PDF** saves the PDF in the session folder and lets you download it or share it on WhatsApp (on devices whose browser can share files; otherwise it downloads the PDF and opens WhatsApp so you can attach it).
+Paste a YouTube link, watch the progress, then review the slides: use the ‹ › buttons (or the arrow keys) to move through them and the **Keep** switch (or `x` / space) to drop unwanted ones. **Generate PDF** shows a preview; **Save** stores it in the session folder, named after the video's title. The session is named after the video too, unless you type a name. From there you can download the PDF or upload it to Google Drive.
+
+### Google Drive upload (one-time setup)
+Uploads happen in your browser, so the server never stores Google tokens. The OAuth client ID lives in `config.json`; replace it with your own if you fork this.
+1. In the [Google Cloud console](https://console.cloud.google.com) create a project and enable the **Google Drive API**.
+2. Configure the OAuth consent screen (External) and add your Google account as a test user.
+3. Create an OAuth client ID of type **Web application** and add `http://localhost:8000` (the address you open the app at) under **Authorized JavaScript origins**.
+4. Put the client ID in `config.json` (`google_client_id`).
+5. Click **Upload to Google Drive** and approve the Google popup. The PDF goes into a `SlidesToPDF` folder in your Drive, as `SlidesToPDF/<video title>.pdf`. The app can only see files it uploaded itself.
 
 To open it from a phone or another computer on the same network, run `HOST=0.0.0.0 ./serve.sh`. There is no login, so only do this on a network you trust.
 

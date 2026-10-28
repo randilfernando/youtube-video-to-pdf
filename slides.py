@@ -36,7 +36,7 @@ def find_video(session):
 
 
 def slugify(text):
-    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-") or "session"
+    return re.sub(r"[^a-z0-9]+", "-", text.lower())[:60].strip("-") or "session"
 
 
 def progress(label, fraction, detail=""):

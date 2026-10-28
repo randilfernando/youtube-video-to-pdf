@@ -34,8 +34,6 @@
   button:disabled { opacity: .5; cursor: not-allowed; }
   button.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); }
   button.ghost:hover { background: var(--bg); }
-  button.wa { background: #25d366; color: #06361a; }
-  button.wa:hover { background: #1fb957; }
   .err { color: var(--danger); margin-top: 12px; font-size: 14px; white-space: pre-wrap; }
   .hidden { display: none !important; }
 
@@ -146,8 +144,8 @@
       </div>
       <div class="field">
         <label for="name">Name <span style="font-weight:400;color:var(--muted)">(optional)</span></label>
-        <input id="name" type="text" placeholder="e.g. Grade 10 – Unit 19" autocomplete="off">
-        <div class="hint">Used to name the folder where the slides are saved.</div>
+        <input id="name" type="text" placeholder="Leave blank to use the video's title" autocomplete="off">
+        <div class="hint">Names the session folder. If left blank, the YouTube video's title is used.</div>
       </div>
       <button id="startBtn" type="submit">Find slides</button>
       <div id="startErr" class="err hidden"></div>
@@ -227,9 +225,10 @@
     <div class="sub" id="rinfo"></div>
     <div class="actions">
       <button id="dl">⬇ Download PDF</button>
-      <button id="wa" class="wa">Share on WhatsApp</button>
+      <button id="drive" class="ghost">☁ Upload to Google Drive</button>
       <button id="back" class="ghost">Back to slides</button>
     </div>
+    <div class="saved" id="driveMsg"></div>
     <div class="saved" id="saved"></div>
   </section>
 </main>
@@ -270,7 +269,7 @@ const show = (name) => {
 
 let sid = null, poll = null;
 let images = [], removed = new Set(), cur = 0, title = "";
-let pdfBlob = null, pdfInfo = null, hasVideo = false;
+let pdfBlob = null, pdfInfo = null, hasVideo = false, pdfFile = "slides.pdf";
 
 const img = (name, thumb) => `/api/sessions/${sid}/images/${encodeURIComponent(name)}${thumb ? "?thumb=1" : ""}`;
 const storeKey = () => `removed:${sid}`;
@@ -358,6 +357,7 @@ async function tick() {
   try { s = await (await api(`/api/sessions/${sid}`)).json(); }
   catch (err) { clearInterval(poll); return reset(); }
 
+  if (s.id !== sid) { sid = s.id; location.hash = sid; }   // folder got its final name
   $("log").textContent = s.log.join("\n");
   if (s.state === "error") {
     clearInterval(poll);
@@ -369,7 +369,7 @@ async function tick() {
   if (s.state === "done") {
     clearInterval(poll);
     title = s.title || sid;
-    hasVideo = s.has_video;
+    hasVideo = s.has_video; pdfFile = s.pdf_name || pdfFile;
     return openReview(s.images, s.pdf);
   }
   const order = ["Fetching info", "Downloading", "Playing"];
@@ -474,6 +474,7 @@ $("pdfBtn").onclick = async () => {
     pdfInfo = await (await api(`/api/sessions/${sid}/pdf`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ keep }),
     })).json();
+    pdfFile = pdfInfo.name;
     pdfBlob = await (await api(`/api/sessions/${sid}/pdf?preview=true&t=${Date.now()}`)).blob(); // kept for sharing
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     previewUrl = URL.createObjectURL(pdfBlob);
@@ -490,30 +491,84 @@ $("save").onclick = async () => {
   const btn = $("save"); btn.disabled = true;
   try {
     const saved = await (await api(`/api/sessions/${sid}/pdf/save`, { method: "POST" })).json();
-    $("rinfo").textContent = `${pdfInfo.pages} pages · ${(saved.bytes / 1e6).toFixed(1)} MB`;
+    pdfFile = saved.name;
+    $("rinfo").textContent = `${pdfFile} · ${pdfInfo.pages} pages · ${(saved.bytes / 1e6).toFixed(1)} MB`;
+    $("driveMsg").textContent = "";
     $("saved").textContent = `Saved on this computer:\n${saved.path}`;
     show("result");
   } catch (err) { toast(err.message); }
   finally { btn.disabled = false; }
 };
 
-const pdfName = () => `${(title || "slides").replace(/[^\w\- ]+/g, "").trim() || "slides"}.pdf`;
-
 $("dl").onclick = () => {
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(pdfBlob); a.download = pdfName(); a.click();
+  a.href = URL.createObjectURL(pdfBlob); a.download = pdfFile; a.click();
 };
 
-$("wa").onclick = async () => {
-  const file = new File([pdfBlob], pdfName(), { type: "application/pdf" });
-  if (navigator.canShare && navigator.canShare({ files: [file] })) {
-    try { await navigator.share({ files: [file], title: title }); } catch {}  // user may cancel
-    return;
+/* Google Drive: the browser signs in and uploads directly; the server never sees a token. */
+const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";  // only files this app creates
+const DRIVE_FOLDER = "SlidesToPDF";
+let gisReady = null, driveToken = null, driveTokenExpiry = 0;
+
+const loadGis = () => gisReady ||= new Promise((ok, fail) => {
+  const s = document.createElement("script");
+  s.src = "https://accounts.google.com/gsi/client";
+  s.onload = ok; s.onerror = () => { gisReady = null; fail(new Error("Could not load Google sign-in. Check your connection.")); };
+  document.head.appendChild(s);
+});
+
+async function driveAccessToken() {
+  if (driveToken && Date.now() < driveTokenExpiry) return driveToken;
+  const { google_client_id: clientId } = await (await api("/api/config")).json();
+  await loadGis();
+  return new Promise((ok, fail) => {
+    google.accounts.oauth2.initTokenClient({
+      client_id: clientId, scope: DRIVE_SCOPE,
+      callback: (r) => {
+        if (r.error) return fail(new Error(r.error_description || r.error));
+        driveToken = r.access_token; driveTokenExpiry = Date.now() + (r.expires_in - 60) * 1000;
+        ok(driveToken);
+      },
+      error_callback: (e) => fail(new Error(e.type === "popup_closed" ? "Sign-in was cancelled." : e.message || e.type)),
+    }).requestAccessToken();
+  });
+}
+
+async function driveFetch(token, url, opts = {}) {
+  const r = await fetch(url, { ...opts, headers: { ...opts.headers, Authorization: `Bearer ${token}` } });
+  if (!r.ok) {
+    if (r.status === 401) driveToken = null;
+    let msg = r.statusText;
+    try { msg = (await r.json()).error.message || msg; } catch {}
+    throw new Error(`Google Drive: ${msg}`);
   }
-  // Browsers that can't share files: download it, then open WhatsApp to attach it.
-  $("dl").click();
-  window.open(`https://wa.me/?text=${encodeURIComponent(`Slides: ${title}`)}`, "_blank");
-  toast("WhatsApp can't receive files from a web page here. The PDF was downloaded; attach it in the chat.");
+  return r.json();
+}
+
+async function uploadToDrive(blob, name) {
+  const token = await driveAccessToken();
+  const g = "https://www.googleapis.com";
+  const q = `name = '${DRIVE_FOLDER}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
+  const found = (await driveFetch(token, `${g}/drive/v3/files?pageSize=1&fields=files(id)&q=${encodeURIComponent(q)}`)).files;
+  const folderId = found.length ? found[0].id : (await driveFetch(token, `${g}/drive/v3/files?fields=id`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: DRIVE_FOLDER, mimeType: "application/vnd.google-apps.folder" }),
+  })).id;
+  const form = new FormData();
+  form.append("metadata", new Blob([JSON.stringify({ name, parents: [folderId] })], { type: "application/json" }));
+  form.append("file", blob);
+  return driveFetch(token, `${g}/upload/drive/v3/files?uploadType=multipart&fields=webViewLink`, { method: "POST", body: form });
+}
+
+$("drive").onclick = async () => {
+  const btn = $("drive"), msg = $("driveMsg");
+  btn.disabled = true; btn.textContent = "Uploading…";
+  msg.textContent = "";
+  try {
+    const r = await uploadToDrive(pdfBlob, pdfFile);
+    msg.innerHTML = `Uploaded to the “${esc(DRIVE_FOLDER)}” folder in Google Drive. <a href="${r.webViewLink}" target="_blank" rel="noopener">Open in Drive</a>`;
+  } catch (err) { msg.textContent = err.message; }
+  finally { btn.disabled = false; btn.textContent = "☁ Upload to Google Drive"; }
 };
 
 $("back").onclick = () => show("review");

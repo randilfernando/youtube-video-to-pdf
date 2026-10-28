@@ -6,6 +6,7 @@ import json
 import re
 import shutil
 import threading
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -18,12 +19,13 @@ import slides
 
 app = FastAPI()
 STATIC = Path(__file__).parent / "static"
+CONFIG = json.loads((Path(__file__).parent / "config.json").read_text())
 SID_RE = re.compile(r"[a-z0-9-]+")
 THUMB_WIDTH = 480
 MAX_LOG_LINES = 200
 
-JOBS = {}  # session id -> live state of an extraction running in this process
-
+JOBS = {}     # session id -> live state of an extraction running in this process
+ALIASES = {}  # provisional job id -> real session id (the folder is named after the video once its title is known)
 
 class NewSession(BaseModel):
     url: str
@@ -39,7 +41,12 @@ class PdfRequest(BaseModel):
     keep: list[str]
 
 
+def resolve(sid):
+    return ALIASES.get(sid, sid)
+
+
 def session_dir(sid):
+    sid = resolve(sid)
     folder = slides.SESSIONS_DIR / sid
     if not SID_RE.fullmatch(sid) or not folder.is_dir():
         raise HTTPException(404, "Unknown session")
@@ -58,10 +65,10 @@ def read_meta(folder):
 
 
 def display_name(folder):
-    """Human label: saved video title, else the session name from the folder."""
+    """Human label: the name given for the session, else the video title, else the folder name."""
     meta = read_meta(folder)
-    if meta.get("title"):
-        return meta["title"]
+    if meta.get("name") or meta.get("title"):
+        return meta.get("name") or meta["title"]
     return re.sub(r"-\d{8}-\d{6}$", "", folder.name).replace("-", " ").strip().title() or folder.name
 
 
@@ -72,8 +79,26 @@ def created_at(folder):
     return datetime.fromtimestamp(folder.stat().st_mtime)
 
 
+def safe_filename(text):
+    cleaned = re.sub(r'[\\/:*?"<>|\x00-\x1f]', " ", text)
+    return re.sub(r"\s+", " ", cleaned).strip(" .")[:120] or "slides"
+
+
+def pdf_name(folder):
+    """The PDF is named after the video."""
+    return safe_filename(read_meta(folder).get("title") or display_name(folder)) + ".pdf"
+
+
 def pdf_path(folder):
-    return folder / f"{folder.name}.pdf"
+    return folder / pdf_name(folder)
+
+
+def find_pdf(folder):
+    """The saved PDF, including ones saved before PDFs were named after the video."""
+    for p in (pdf_path(folder), folder / f"{folder.name}.pdf"):
+        if p.exists():
+            return p
+    return None
 
 
 def preview_path(folder):
@@ -81,21 +106,31 @@ def preview_path(folder):
     return folder / ".preview.pdf"
 
 
-def run_job(job, folder, url):
+def run_job(job, jid, url, name):
     def report(stage, fraction, detail=""):
         job.update(stage=stage, fraction=fraction, detail=detail)
 
     def log(msg):
         job["log"] = (job["log"] + [msg])[-MAX_LOG_LINES:]
 
+    # The video's title (needed to name the folder) is only known after yt-dlp has run,
+    # so download into a scratch folder first and move the video into its session folder.
+    incoming = slides.SESSIONS_DIR / f".incoming-{jid}"
     try:
-        video, title = slides.download_video(url, 1080, folder, verbose=True, report=report, log=log)
-        job["title"] = title
-        (folder / "session.json").write_text(json.dumps({"title": title, "url": url}))
+        incoming.mkdir(parents=True)
+        video, title = slides.download_video(url, 1080, incoming, verbose=True, report=report, log=log)
+        folder = slides.new_session_folder(name or title)
+        video = Path(shutil.move(str(video), folder / video.name))
+        (folder / "session.json").write_text(json.dumps({"title": title, "name": name or title, "url": url}))
+        ALIASES[jid] = folder.name
+        JOBS[folder.name] = JOBS.pop(jid)
+        job["title"] = name or title
         slides.extract_from_video(video, folder / slides.SCREENSHOTS, 2.0, 0.5, report)
         job["state"] = "done"
     except Exception as e:  # surfaced to the page
         job.update(state="error", error=str(e))
+    finally:
+        shutil.rmtree(incoming, ignore_errors=True)
 
 
 def run_rescan(job, folder, video, interval, threshold):
@@ -122,11 +157,11 @@ def create_session(body: NewSession):
     url = body.url.strip()
     if not re.match(r"https?://", url):
         raise HTTPException(400, "Enter a full YouTube link starting with https://")
-    folder = slides.new_session_folder(body.name.strip() or "slides")
-    JOBS[folder.name] = {"state": "running", "stage": "Fetching info", "fraction": None,
-                         "detail": "", "title": "", "error": "", "log": []}
-    threading.Thread(target=run_job, args=(JOBS[folder.name], folder, url), daemon=True).start()
-    return {"id": folder.name}
+    jid = f"new-{uuid.uuid4().hex[:8]}"
+    JOBS[jid] = {"state": "running", "stage": "Fetching info", "fraction": None,
+                 "detail": "", "title": "", "error": "", "log": []}
+    threading.Thread(target=run_job, args=(JOBS[jid], jid, url, body.name.strip()), daemon=True).start()
+    return {"id": jid}
 
 
 @app.get("/api/sessions")
@@ -135,30 +170,35 @@ def list_sessions():
     out = []
     if slides.SESSIONS_DIR.is_dir():
         for folder in slides.SESSIONS_DIR.iterdir():
-            if not folder.is_dir() or not SID_RE.fullmatch(folder.name) or folder.name in JOBS and \
-                    JOBS[folder.name]["state"] == "running":
+            if not folder.is_dir() or not SID_RE.fullmatch(folder.name) or \
+                    JOBS.get(folder.name, {}).get("state") == "running":
                 continue
             names = image_names(folder)
             if names:
                 out.append({"id": folder.name, "title": display_name(folder), "slides": len(names),
-                            "pdf": pdf_path(folder).exists(), "cover": names[0],
+                            "pdf": find_pdf(folder) is not None, "cover": names[0],
                             "created": created_at(folder).isoformat()})
     return sorted(out, key=lambda s: s["created"], reverse=True)
 
 
 @app.get("/api/sessions/{sid}")
 def get_session(sid: str):
+    sid = resolve(sid)
+    job = JOBS.get(sid)
+    if job and not (slides.SESSIONS_DIR / sid).is_dir():  # still downloading: no session folder yet
+        return {**job, "id": sid, "images": [], "pdf": False, "has_video": False, "pdf_name": ""}
     folder = session_dir(sid)
-    job = JOBS.get(sid, {"state": "done", "stage": "", "fraction": 1, "detail": "",
-                         "title": "", "error": "", "log": []})
+    job = job or {"state": "done", "stage": "", "fraction": 1, "detail": "", "title": "", "error": "", "log": []}
     if not job["title"]:
         job = {**job, "title": display_name(folder)}
     return {**job, "id": sid, "images": image_names(folder) if job["state"] != "running" else [],
-            "pdf": pdf_path(folder).exists(), "has_video": slides.find_video(folder) is not None}
+            "pdf": find_pdf(folder) is not None, "pdf_name": pdf_name(folder),
+            "has_video": slides.find_video(folder) is not None}
 
 
 @app.post("/api/sessions/{sid}/rescan")
 def rescan(sid: str, body: RescanRequest):
+    sid = resolve(sid)
     folder = session_dir(sid)
     video = slides.find_video(folder)
     if not video:
@@ -198,7 +238,7 @@ def make_pdf(sid: str, body: PdfRequest):
         raise HTTPException(400, "Keep at least one slide")
     out = preview_path(folder)
     slides.build_pdf(files, out)
-    return {"pages": len(files), "bytes": out.stat().st_size}
+    return {"pages": len(files), "bytes": out.stat().st_size, "name": pdf_name(folder)}
 
 
 @app.post("/api/sessions/{sid}/pdf/save")
@@ -208,22 +248,31 @@ def save_pdf(sid: str):
         raise HTTPException(400, "Generate the PDF first")
     out = pdf_path(folder)
     preview_path(folder).replace(out)
-    return {"bytes": out.stat().st_size, "path": str(out.resolve())}
+    legacy = folder / f"{folder.name}.pdf"
+    if legacy != out:
+        legacy.unlink(missing_ok=True)  # replaced by the video-named PDF
+    return {"bytes": out.stat().st_size, "path": str(out.resolve()), "name": out.name}
 
 
 @app.get("/api/sessions/{sid}/pdf")
 def get_pdf(sid: str, preview: bool = False):
     folder = session_dir(sid)
-    out = preview_path(folder) if preview else pdf_path(folder)
-    if not out.exists():
+    out = preview_path(folder) if preview else find_pdf(folder)
+    if not out or not out.exists():
         raise HTTPException(404, "PDF not generated yet")
     # inline so the browser can show it in the preview frame
-    return FileResponse(out, media_type="application/pdf", filename=pdf_path(folder).name,
+    return FileResponse(out, media_type="application/pdf", filename=pdf_name(folder),
                         content_disposition_type="inline")
+
+
+@app.get("/api/config")
+def config():
+    return {"google_client_id": CONFIG["google_client_id"]}
 
 
 @app.delete("/api/sessions/{sid}")
 def delete_session(sid: str):
+    sid = resolve(sid)
     folder = session_dir(sid)
     if JOBS.get(sid, {}).get("state") == "running":
         raise HTTPException(409, "This session is still being processed")
