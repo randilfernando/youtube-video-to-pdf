@@ -226,7 +226,7 @@
     <div class="actions">
       <button id="dl">⬇ Download PDF</button>
       <button id="drive" class="ghost">☁ Upload to Google Drive</button>
-      <button id="back" class="ghost">Back to slides</button>
+      <button id="back" class="ghost">Close</button>
     </div>
     <div class="saved" id="driveMsg"></div>
     <div class="saved" id="saved"></div>
@@ -494,7 +494,7 @@ $("save").onclick = async () => {
     pdfFile = saved.name;
     $("rinfo").textContent = `${pdfFile} · ${pdfInfo.pages} pages · ${(saved.bytes / 1e6).toFixed(1)} MB`;
     $("driveMsg").textContent = "";
-    $("drive").classList.remove("hidden");
+    $("drive").disabled = false; $("drive").textContent = "☁ Upload to Google Drive";
     $("saved").textContent = `Saved on this computer:\n${saved.path}`;
     show("result");
   } catch (err) { toast(err.message); }
@@ -568,12 +568,13 @@ $("drive").onclick = async () => {
   try {
     const r = await uploadToDrive(pdfBlob, pdfFile);
     msg.innerHTML = `✓ Uploaded to Google Drive (${esc(DRIVE_FOLDER)}/${esc(pdfFile)}). <a href="${r.webViewLink}" target="_blank" rel="noopener">Open in Drive</a>`;
-    btn.classList.add("hidden");
+    btn.textContent = "✓ Uploaded";  // stays disabled until a new PDF is saved
+    return;
   } catch (err) { msg.textContent = err.message; }
-  finally { btn.disabled = false; btn.textContent = "☁ Upload to Google Drive"; }
+  btn.disabled = false; btn.textContent = "☁ Upload to Google Drive";
 };
 
-$("back").onclick = () => show("review");
+$("back").onclick = reset;
 
 /* ---------- resume after reload ---------- */
 if (location.hash.length > 1) { sid = location.hash.slice(1); watch(); } else loadPast();
