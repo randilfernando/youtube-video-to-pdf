@@ -110,7 +110,9 @@ def download_video(url, max_height, dest_dir, verbose=False, report=cli_report, 
             report("Downloading", 1, "done")
 
     h = max_height
-    opts = {"logger": Log(), "verbose": verbose, "noprogress": True, "progress_hooks": [hook],
+    opts = {"logger": Log(), "verbose": verbose,
+            # A link like watch?v=ID&list=PL... must download just that video, not the playlist.
+            "noplaylist": True, "noprogress": True, "progress_hooks": [hook],
             "socket_timeout": 30,
             # Force IPv4: on some networks IPv6 to YouTube hangs until it times out.
             "source_address": "0.0.0.0",
@@ -124,7 +126,11 @@ def download_video(url, max_height, dest_dir, verbose=False, report=cli_report, 
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
-            return ydl.prepare_filename(info), info.get("title", "")
+            done = (info.get("requested_downloads") or [{}])[0].get("filepath")
+            path = Path(done) if done else find_video(dest_dir)
+            if not path or not path.exists():
+                raise RuntimeError("The video downloaded but its file could not be found.")
+            return path, info.get("title", "")
     finally:
         fetching.set()
 
